@@ -1,0 +1,744 @@
+Step 1: trim adaptors, prepare files, and check quality
+Before this step, I checked the multiQC report received from the University of Wisconsin Madison Biotechnology Center to verify the quality of raw sequences. I uploaded all raw sequences onto the computer in the Smith lab.
+Upload raw sequence files onto the R2 computing cluster:
+# scp is secure copy. This allows us to transfer files from one computer to another. After scp we gave the file path to our raw sequences on the lab computer, then the file path to the desired destination folder on the R2 computing cluster. 
+scp  /drives/c/SequenceDate/3.28.22/220321_BH7N3NDSX3.zip ataylor2@r2-login.boisestate.edu:/home/ataylor2/scratch/Cym2
+Unzip the files from the zipped folder:
+unzip * .zip
+If you uploaded the .gz (if unzipped before uploading) files individually use the following command specific to .gz files:
+gunzip * .fastq.gz
+Next, I need to rename our files with informative names.
+I use a python script for this so I have to tell the computer to run python by using “python” instead of “sbatch” when I submit the job to the slurm (job scheduler).
+You will want to rename all the files following this example. Within the first quotation is the original file name and in the second quotation is what I want the new file to be named: “Cym_ter_albiflorus_AT11_S250_L004_R001”: “Cym_ter_albiflorus_AT11_R1”
+You should specify the directory at the following locations in the script:
+ folder_src = ‘hybpiper_hybphaser_lom_cym’ (for source directory)
+folder_ds = ‘hybpiper_hybphaser_lom_cym’ (for the destination directory)
+After everything is filled in, run the script:
+python ~/path/to/python/script/copy_rename_fastq.py
+
+# script example 
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+import shutil  # import python packages
+import os
+folder_src = 'Cym2' # source file folder
+src = os.path.join(os.getcwd(),folder_src )
+folder_ds = 'originaldata2' # destination file folder 
+ds = os.path.join(os.getcwd(),folder_ds ) # concatenates path components
+
+# samples previous name: what we want to rename the sample as 
+dic_b = {"Cym_ter_alJFS17399_S185_L002_R1_001":"Cym_ter_alJFS17399_R1",
+  "Cym_ter_alJFS17399_S185_L002_R2_001": "Cym_ter_alJFS17399_R2",
+  "CymterteMD1166_S208_L002_R2_001" : "Cym_ter_teMD1166_R2",
+}
+
+dir_files_src = os.listdir(src)
+
+for file_src in dir_files_src:
+  file_ = file_src[:-6]
+if file_ in dic_b.keys():
+  n_wext = dic_b[file_]
+new_src = os.path.join(src,file_src)
+new_des = os.path.join(ds,n_wext + ".fastq")
+shutil.copy(new_src,new_des)
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Now I need to trim the adaptors from our sequences and remove poor quality reads. Since this is a bash script, I use the command “sbatch” when scheduling the job with slurm.
+run Trimmomatic:
+sbatch ~/path/to/bash/script/Trimmomatic.bash
+
+## example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# the following pound signs are not comments. They instruct the slurm scheduler
+#----------------------------------------------------------------------
+#SBATCH -J Trim1    # job name
+#SBATCH -o outtrim  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+#----------------------------------------------------------------------
+## After this, pound signs are comments as usual
+
+# Generally needed modules (modules contain dependencies):
+module load slurm
+module load gcc/7.2.0   
+
+module load trimmomatic/0.39
+
+#execute Trimmomatic on all files ending in .fastq
+
+for R1 in ~/scratch/hybpiper_hybphaser_lom_cym/*R1.fastq # instruct the program on what files to perform trimmomatic (all R1.fastq)
+do
+R2=${R1/R1/R2}
+R1paired=${R1/R1/R1_paired}
+R1unpaired=${R1/R1/R1_unpaired}
+R2paired=${R2/R2/R2_paired}
+R2unpaired=${R2/R2/R2_unpaired}
+# call the java program trimmomatic version 0.39
+java -jar /cm/shared/apps/trimmomatic/0.39/trimmomatic-0.39.jar PE -threads 32 -phred33 $R1 $R2 $R1paired $R1unpaired $R2paired $R2unpaired 
+ILLUMINACLIP:/cm/shared/apps/trimmomatic/0.39/adapters/TruSeq3-PE-2.fa:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36 # minimum length of sequence 
+
+done
+#illumina clip: looks for adapters and clips them 
+#2: the program still recognizes an adaptor if a maximum of 2 bases are mismatched.
+# 30: checks for adaptor contamination in additional ~50 base pairs. The higher this number the more stringent the program will be in filtering contamination (30 is default from the manual)
+# 10: in case of single end read, check about 17 base pairs for contamination (has no effect since we have PE reads, but still needs to be specified)
+MINLEN:36 : minimum length of sequence 
+# -phred33 : specifies base quality encoding as Phred 33
+# -threads 32: increasing threads might decrease computational time
+# PE: we are using paired end reads
+# leading and trailing: cut of beginning and end of read of low quality (generally the ends can have poor quality)
+# sliding window: start at the 5’ end and clip reads when the average quality falls below an average of 15 per every 4 base pairs. 
+# minlen: minimum length of sequence. discard reads less than this
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Make a directory for the paired and unpaired reads:
+mkdir paired unpaired
+Move all unpaired reads to the unpaired folder and then all paired reads to the paired folder.
+The asterisk is a wildcard meaning it performed the ‘mv’ command on all files with the same ending past the asterisk.
+mv *unpaired.fastq unpaired
+mv *paired.fastq paired
+I will work in the paired folder with our paired end reads from here on out.
+Check the quality of the paired end reads with fastq:
+sbatch ~/path/to/bash/script/fastqc.bash
+
+# example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+
+# ----------------Parameters---------------------- #
+#SBATCH -J fastQC  # job name
+#SBATCH -o fastqcoutput  # output and error file name (%j expands to jobID)
+#SBATCH -n 16             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+# -------------------------------------------------------------------------
+
+# I had to load the needed modules that my job needs run:
+module load slurm
+module load gcc/7.2.0   
+
+module load fastqc/0.11.8
+
+#execute fastqc on all files ending in .fastq
+fastqc *.fastq
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+View fasqc html files and assess the quality of each sample.
+Step 2: HybPiper
+Hybpiper requires a target file of 353 orthologous gene sequences from many angiosperm species. I chose the mega 353 target file and uploaded the mega353.fasta target file to the scratch directory.
+Hybpiper requires a list of the names of each sample, so before running hybpiper I generate the namelist of all our samples with a bash script.
+Generate name list:
+sbatch ~/path/to/bash/script/namelist.batch
+
+# example of bash script:
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#SBATCH -J PENA     # job name
+#SBATCH -o pena_namelist_output1  # output and error file name (%j expands to jobID)
+#SBATCH -n 24             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 9:00:00       
+# ------------------------------------------------------------
+
+# Generally needed modules:
+module load slurm
+module load gcc/7.2.0   
+module load blast/2.10.0  
+module load gnuparallel/20200622
+module load openmpi
+
+for f in *_R1_paired.fastq; do (echo ${f/_R1_paired.fastq} >> namelist.txt); done
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Now I am ready for hybpiper.
+I used hybpiper 2.0.
+First, I had to install hybpiper and dependencies with a conda environment.
+This was done in a dev-session on the R2 computing cluster.
+Download and install miniconda with the default settings:
+# download and install miniconda with the default settings
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+
+# re-source the bashrc so that conda paths are set correctly
+. ~/.bashrc
+
+# add mamba to the base environment (mamba helps resolve conflicts in dependencies)
+conda install -c conda-forge -n base mamba
+
+# use mamba to create the environment
+mamba create -n hybpiper-env -c chrisjackson-pellicle -c bioconda -c conda-forge hybpiper
+
+# activate the environment and check that the installation worked
+conda activate hybpiper-env
+hybpiper check_dependencies
+The first hybpiper script maps reads against the target file and then performs de novo assembly of 353 orthologous loci:
+sbatch ~/path/to/bash/scripts/hybpiper2_assemble.bash
+
+# example of bash script:
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+# ------------------------------------------------------------------------
+#SBATCH -J hybpiper2    # job name
+#SBATCH -o hyb2log_slurm.o%j     # output and error file name (%j expands to jobID)
+#SBATCH -N 1             # number of nodes requested
+#SBATCH -n 28                # total number of cpus requested. 28 per node.
+#SBATCH -p defq              # queue (partition) -- defq, ipowerq, eduq, gpuq.
+#SBATCH -t 72:00:00          # run time (hh:mm:ss) - 72.0 hours in this example.
+#SBATCH --exclusive
+#----------------------------------------------------------------------------
+
+# Load the necessary modules
+# Activate the conda environment
+. ~/.bashrc
+conda activate hybpiper-env
+
+
+# run your program
+
+# HybPiper 2
+printf "Running HybPiper\n"
+while read name 
+do hybpiper assemble -t_dna ~/scratch/mega353.fasta --bwa -r "$name"_R*_paired.fastq --prefix "$name" --run_intronerate --cov_cutoff 4 --cpu 28 
+done < namelist.txt
+printf "\nFinished\n\n\n"
+
+# hybpiper assemble: name of phython scrip to call
+# bwa use bwa to search for reads on target. only works for nucleotides
+# t_dna: target file is DNA not AA
+# --run_intronerate: generate introns and supercontigs in addition to exons
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+I used the –run_intronerate option so hybpiper assembles introns and supercontigs in addition to exons.
+Next, I want to generate statistics to assess the recovery per sample and per locus:
+sbatch ~/path/to/bash/scripts/hybpiper2_hyblength.bash
+
+# example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+#---------------------------------------------------------------------
+#SBATCH -J hyblength     # job name
+#SBATCH -o hyblength_output4  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 5:00:00   # run time (hh:mm:ss) - 12.0 hours in this example.
+#----------------------------------------------------------------------
+
+# Generally needed modules:
+# Activate the conda environment
+. ~/.bashrc
+conda activate hybpiper-env
+
+
+# Visualize results
+# Get sequence length to visualize HybPiper's success at recovering genes at each locus, across all samples.
+
+hybpiper stats -t_dna ~/scratch/mega353.fasta gene ~/scratch/hybpiper2/paired/namelist.txt
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Now, I can generate the heatmap with the sequence lengths recovered:
+sbatch ~/path/to/bash/scripts/hybpiper2_heatmap.bash
+
+# example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+#-------------------------------------------------------------------
+#SBATCH -J heatmap     # job name
+#SBATCH -o heatmap  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 5:00:00   # run time (hh:mm:ss) - 12.0 hours in this example.
+#----------------------------------------------------------------------
+
+
+# Generally needed modules:
+# Activate the conda environment
+. ~/.bashrc
+conda activate hybpiper-env
+
+
+# Visualize results
+# Get a heatmap of sequence length to visualize HybPiper's success at recovering genes at each locus, across all samples.
+
+hybpiper recovery_heatmap seq_lengths.tsv # file generated from hybpiper2_hyblength.bash
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Now, I need hybpiper to sort the exon, intron, and supercontig files according to gene:
+sbatch ~/path/to/bash/scripts/hybpiper2_retriveexons.bash
+
+# example bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+# -----------------------------------------------------------------------
+#SBATCH -J retrieve_exons     # job name
+#SBATCH -o exon.log  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+# -------------------------------------------------------------------------------
+
+
+# Generally needed modules:
+# Activate the conda environment
+. ~/.bashrc
+conda activate hybpiper-env
+
+#Retrieving Sequences
+#This script fetches the sequences recovered from the same gene for many samples and generates an unaligned multi-FASTA file for each gene.
+
+# Execute the program
+# make a file by gene:
+
+hybpiper retrieve_sequences dna -t_dna ~/scratch/mega353.fasta --sample_names namelist.txt
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# retrieve intron
+sbatch ~/path/to/bash/scripts/hybpiper2_retriveintrons.bash
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#!/bin/bash
+# -----------------------------------------------------------------------
+#SBATCH -J retrieve_introns     # job name
+#SBATCH -o intron.log  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+# -------------------------------------------------------------------------------
+
+
+# Generally needed modules:
+# Activate the conda environment
+. ~/.bashrc
+conda activate hybpiper-env
+
+hybpiper retrieve_sequences intron -t_dna ~/scratch/mega353.fasta --sample_names namelist.txt
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# retrieve supercontig
+sbatch ~/path/to/bash/scripts/hybpiper2_retrivesupercontigs.bash
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#!/bin/bash
+# ---------------------------------------------------------------------
+#SBATCH -J retrieve_supercontigs     # job name
+#SBATCH -o supercontigs.log  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+# ---------------------------------------------------------------------
+
+
+# Generally needed modules:
+# Activate the conda environment
+. ~/.bashrc
+conda activate hybpiper-env
+
+hybpiper retrieve_sequences supercontig -t_dna ~/scratch/mega353.fasta --sample_names namelist.txt
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Now I need to get information about paralogous genes:
+sbatch ~/path/to/bash/scripts/hybpiper2_paralogretriever.bash
+
+# example of bash script:
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+#-------------------------------------------------------------------------
+#SBATCH -J paralog_retriever     # job name
+#SBATCH -o Paralogretr # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+#---------------------------------------------------------------------------
+
+# Generally needed modules:
+. ~/.bashrc
+conda activate hybpiper-env
+
+
+# Execute the program, in a sequential way:
+
+hybpiper paralog_retriever namelist.txt -t_dna ~/scratch/mega353.fasta
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Step 3: HybPhaser
+HybPhaser requires a few additional dependencies including ape, sequinR, stringR, BCftools, and BBsplit.
+The bioinformatics module I generally use for our bioinformatics workflow was not working with the additional dependencies.
+I had to call a hybpiper.sif file that was a temporary fix to the dependency issues.
+Run the first step of phase 1 of hybphaser this should be run in the same directory as hybpiper since it relies on the outputs of hybpiper:
+sbatch ~/path/to/bash/scripts/hybphaser1.1.bash
+
+# example of bash script
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+#----------------------------------------------------
+#SBATCH -J hybphaser    # job name
+#SBATCH -o phaser_outputlog_%J.o     # output and error file name (%j expands to jobID)
+#SBATCH -N 1             # number of nodes requested
+#SBATCH -n 28                # total number of cpus requested. 28 per node.
+#SBATCH -p defq              # queue (partition) -- defq, ipowerq, eduq, gpuq.
+#SBATCH -t 72:00:00          # run time (hh:mm:ss) - 72.0 hours in this example.
+#-----------------------------------------------------
+
+# Load the necessary modules
+module load singularity 
+
+
+# run your program
+
+# Hybphaser 2.0
+
+# Part 1: SNP assessment. 
+# 1.1 Remap sequence reads using the de novo assembled sequences (from hybpiper) as a reference.
+
+
+singularity exec -B /scratch/ataylor2 /scratch/ataylor2/hybp.sif bash /opt/HybPhaser/1_generate_consensus_sequences.sh -n namelist.txt -o ~/scratch/hybpiper2/paired/hybphaser -i -t 4
+
+# -i made hybphaser use supercontig files from hybpiper
+# - n is the namelist file (which is the same namelist files used in hybpiper)
+# -o is the folder where hybphaser outputs will go
+# -t is threads I think
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Before running the R hybphaser scripts you need to set the config file.
+The config file is located in the folder that hybphaser scripts are downloaded in.
+General settings give file paths to file locations.
+Since I only did part 1 of hybphaser, I only have to fill in part 1.
+Example of our config file:
+###### Configuration File for all HybPhaser R scripts ###
+
+# General settings
+path_to_output_folder = "~/scratch/hybpiper_hybphaser_lom_cym/paired/hybphaser_lom"
+fasta_file_with_targets = "~/scratch/mega353.fasta"
+targets_file_format = "DNA"  # 'DNA' or 'AA' 
+path_to_namelist = "~/scratch/hybpiper_hybphaser_lom_cym/paired/namelist.txt"
+intronerated_contig = "yes"
+
+
+### Part 1: SNP Assessment ###
+
+name_for_dataset_optimization_subset = ""
+
+# missing data
+remove_samples_with_less_than_this_propotion_of_loci_recovered = 0.2
+remove_samples_with_less_than_this_propotion_of_target_sequence_length_recovered = 0.45
+remove_loci_with_less_than_this_propotion_of_samples_recovered = 0.2
+remove_loci_with_less_than_this_propotion_of_target_sequence_length_recovered = 0.25
+
+# Paralogs
+remove_loci_for_all_samples_with_more_than_this_mean_proportion_of_SNPs = "outliers"  # any number between 0 and 1, 'none' or  'outliers' 
+file_with_putative_paralogs_to_remove_for_all_samples = ""
+remove_outlier_loci_for_each_sample = "yes"
+
+# ~~~~~~~~~~~~~~~~
+I ran the remaining scripts of hybpaser part 1 in a dev-session on the R2 computing cluster:
+$ dev-session
+
+# load the require packages
+
+$ module load R/gcc/4.0.5 bioinformatics
+
+# make the console R and confirm the directory 
+
+$ R
+
+> getwd()
+
+# before running the R scripts, we have to give the file path to the config file
+
+> config_file <- "~/path/to/config/file/config.txt"
+
+# run the 2nd hybphaser script of part 1
+
+> source("~/path/to/hybphaser/scripts/1a_count_snps.R")
+
+# the output should be a folder called 00_R_objects which contain several rds files
+
+# now, run the third script of hybphaser part 1
+
+> source("~/path/to/hybphaser/scripts/1b_assess_dataset.R")
+
+# this should create a folder called "01_assessment" that contains various files with information on locus heterozygosity and allele divergence
+
+# finally, run the fourth script of hybphaser part 1
+
+> source("~/path/to/hybphaser/scripts/1c_generate_sequence_list.R")
+
+# the output should be a folder named "03_sequence_lists"
+# within this folder are four sequence lists based on the thresholds specified in the config folder
+# We used the data in the "loci_consensus" folder from here on out
+
+Step 4: alignment and trimming
+After generating our sequences, I had to align each gene file using mafft.
+Run mafft on R2:
+sbatch ~/path/to/bash/scripts/mafft2AT.bash
+
+# example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+
+#SBATCH -J MafftCym     # job name
+#SBATCH -o MAFFTCymlog_%J.o  # output and error file name (%j expands to jobID)
+#SBATCH -n 28            # total number of tasks requested
+#SBATCH -N 2          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+
+
+# Generally needed modules:
+module load bioinformatics
+
+# create a directory for alignments
+
+mkdir cym_lom_aligned # output file for aligned gene fastas
+
+#run mafft
+
+parallel --eta "mafft --localpair --adjustdirectionaccurately --leavegappyregion --preservecase --maxiterate 1000 {}.fasta > cym_lom_aligned/{}.fasta" :::: genenames.txt
+
+# localpair: All pairwise alignments are computed with the Smith-Waterman algorithm. More accurate but slower
+
+# adjust direction accurately: generate reverse complement sequences, as necessary, and align them together with the remaining sequences.
+
+# leave gappy region: disables tenancy to insert more gaps into gap-rich regions
+
+# preservecase: don't change to upper or lower case
+
+# maxiterate 1000: number cycles of iterative refinement are performed (1000 in our case)
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Next, I will use the BMGE program to eliminate gaps and areas with high entropy.
+I found that BMGE replaces the existing file so I like to copy all my aligned loci into a separate folder so I have copies of genes post mafft and post BMGE.
+cp *fasta ~/scratch/hybpiper2/paired/hybphaser/03_sequence_list/trimmed_aligned
+Then, from that directory, I will run BMGE, this way I have a saved copy of the mafft aligned data.
+Run BMGE:
+sbatch ~/path/to/bash/script/BMGEAT.bash
+
+# example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+
+#SBATCH -J BMGE     # job name
+#SBATCH -o BMGE_log  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+
+# Generally needed modules:
+module load bioinformatics
+
+# run BMGE, I created a folder for the output called TrimmedAligned
+
+
+for f in *.fasta;
+
+do bmge -i ${f} -t DNA -of ${f} >> log_bmge.txt; > TrimmedAligned
+
+done
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The output should be fasta files with reduced gaps and entropy.
+It is important to manually examine each alignment for errors or misassembly.
+I examined each gene file in AliView and removed an additional 21 loci from analyses because they had sequences that did match to the desired loci when performing an NCBI blast search.
+Step 5: Phylogenetic analysis
+RAxML
+First, I ran maximum likelihood analysis with RAxML.
+Before running RAxML I had to create a multiple sequence alignment file that included each sample’s 279 genes concatenated together. I used MEGA for this.
+I ran RAxML using the CIPRES workbench with the following parameters:
+raxmlHPC -T 28 -f a -x 12345 -p 12345 -N 1000 -m GTRCAT -O -o Lom_lucidum_Mason105,Lom_foeniculaceum_JFS17414,Cym_panam_acutifolius_RCB407,Cym_longipes_JFS16513,Cym_jonesii_DM20030,Cym_ibapensis_JFS16744,Cym_glaucus_DM20400,Cym_douglassii_DM20609,Cym_coulteri_DM20036,Cym_corrugatus_Carlson003 -n raxmltreeo.tre -k -s loci_consensus_noparalogs.fas && raxmlHPC -T 28 -m GTRCAT -J MR -z RAxML_bootstrap.raxmltreeo.tre -n consensus.raxmltreeo.tre
+
+
+I used RAxML-HPC v.8
+ -T how many nodes we can run on 
+-f what kind of algorithm RAxML will activate. I specify  “- f a” for rapid Bootstrap analysis and search for best¬scoring ML tree in one program run 
+-x Specify an integer number (random seed) and turn on rapid bootstrapping 
+-p Specify a random number seed for the parsimony inferences 
+-N number of replicates for bootstrap analysis (our case 1000) 
+-m the model of binary. GTRCAT is for nucleotides.
+ -O Disable check for completely undetermined sequence in alignment. (Usually, RAxML produces an error when there are “- or NA” and this disabled it.) 
+-o Specify the name of a single outgroup or a comma separated list of outgroups: I specified the following outgroups: Lom_lucidum_Mason105,Lom_foeniculaceum_JFS17414,Cym_panam_acutifolius_RCB407,Cym_longipes_JFS16513,Cym_jonesii_DM20030,Cym_ibapensis_JFS16744,Cym_glaucus_DM20400,Cym_douglassii_DM20609,Cym_coulteri_DM20036,Cym_corrugatus_Carlson003
+ -n Specifies the name of the output file 
+-k Specifies that bootstrapped trees should be printed with branch lengths 
+-s Specify the name of the alignment data file in PHYLIP or FASTA format 
+-J Compute majority rule consensus tree with “-J MR” 
+-z Specify the file name of a file containing multiple trees
+
+IQtree
+I also performed maximum likelihood analysis with IQtree on the CIPRES workbench. 
+I used similar parameters as RAxML in IQtree version 2.1.2:
+specify_dnamodel: GTR 
+specify_numpatterns: 513202
+specify_outgroup: Lom_lucidum_Mason105,Lom_foeniculaceum_JFS17414,Cym_panam_acutifolius_RCB407,Cym_longipes_JFS16513,Cym_jonesii_DM20030,Cym_ibapensis_JFS16744,Cym_glaucus_DM20400,Cym_douglassii_DM20609,Cym_coulteri_DM20036,Cym_corrugatus_Carlson003 
+specify_prefix: output 
+specify_radius: 6 
+specify_runtype: 2 
+bootstrap_type: bb num_bootreps: 1000
+
+Astral
+The input for astral is individual concatenated gene tree files containing individual gene trees for each locus.
+Mirarab et al. (2014) recommends using the RAxML best tree as an input.
+First, I generated RAxML best trees with for each genetree included in our analyses.
+Run RAxML on gene trees:
+sbatch ~/path/to/bash/scripts/Raxml_genetree_AT.bash
+
+# example of bash script:
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+#--------------------------------------------------------------------
+#SBATCH -J GeneRAxML2     # job name
+#SBATCH -o G_ML__%J.o  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p defq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 200:00:00       # run time (hh:mm:ss)
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=annietaylor107@boisestate.edu 
+#---------------------------------------------------------------------
+
+# Generally needed modules:
+module load bioinformatics
+
+# run RAxML
+
+for f in *.fasta; do echo ${f};
+raxmlHPC -f a -x 12345 -p 12345 -# autoMRE -m GTRGAMMA -k -s "$f" -n ${f/.fasta}.tree 1> ${f/.fasta}.stdout 2> ${f/.fasta}.stder;
+  done
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+After all gene trees are completed, concatenate into one file:
+$ cat RAxML_bestTree* > astral_genetrees.tree
+Then, run the heuristic version of astral:
+sbatch ~/path/to/bash/scripts/astral_AT.bash
+
+# example of bash script
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#!/bin/bash
+
+#SBATCH -J astral     # job name
+#SBATCH -o astral_%J.o  # output and error file name (%j expands to jobID)
+#SBATCH -n 28             # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p shortq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 12:00:00       # run time (hh:mm:ss)
+
+
+# Generally needed modules:
+module load bioinformatics
+
+# run astral
+
+astral -i astral_genetrees.tree -o out_astral.tree
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SODA
+# we can use the same input as astral for SODA analyses
+
+# we installed SODA using gitclone
+
+gitclone https://github.com/maryamrabiee/SODA.git
+
+# then we needed to install DendroPy with pip
+
+$ python3 -m pip install -U dendropy
+
+# now we are set to run SODA 
+
+# we ran this from the folder we installed SODA which contained all the scripts necessary for execution
+
+# we did not submit a job to the SLURM because this analyses run within 1-2 minutes
+
+python3 run_delimitation.py -i astral_genetrees.tree -d soda_results -o soda_cym_280.csv
+
+Step 6: Chloroplast data
+First, I need to interleave our paired end reads:
+bash interleave_fastq.sh R1 R2 > samplename_interleave.fastq
+Now, I will run mitobim on each sample file separately:
+#!/bin/bash
+#--------------------------------------------------
+#SBATCH -J mitobim2     # job name
+#SBATCH -o mitobim2log_%J.o  # output and error file name (%j expands to jobID)
+#SBATCH -n 28            # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p defq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 48:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=annietaylor107@boisestate.edu
+#------------------------------------------------------------
+
+# Generally needed modules:
+module load mitobim
+
+
+#run mitobim
+
+MITObim.pl -start 1 -end 30 -quick Fvulgare_chlgenome.fasta -sample Cym_ter_teAT30 -ref Fvulgare_chlgenome.fasta -readpool Cym_ter_teAT30_interleave.fastq -paired -clean --NFS_warn_only
+One sample needed additional adaptor trimming:
+#!/bin/bash
+#------------------------------------------------------
+#SBATCH -J mitobim2     # job name
+#SBATCH -o mitobim2log_%J.o  # output and error file name (%j expands to jobID)
+#SBATCH -n 28            # total number of tasks requested
+#SBATCH -N 1          # number of nodes you want to run on  
+#SBATCH -p defq         # queue (partition) -- defq, eduq, gpuq, shortq
+#SBATCH -t 48:00:00       # run time (hh:mm:ss) - 12.0 hours in this example.
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=annietaylor107@boisestate.edu
+#-----------------------------------------------------------
+
+# Generally needed modules:
+module load mitobim
+
+#run mitobim
+
+MITObim.pl -start 1 -end 30 -quick Fvulgare_chlgenome.fasta -sample Cym_ter_teAT30 -ref Fvulgare_chlgenome.fasta -readpool Cym_ter_teAT30_interleave.fastq -paired -clean --NFS_warn_only
+Generate statistics on chloroplast data (code adapted from Dr. Buerki’s genomics class):
+#Load the required packages
+library(ape)
+library(seqinr)
+
+#set working directory to where file is located
+setwd("C:/Users/annie/Desktop/BSU/Project/Bioinformatics/chloroplast/mitobim")
+
+#inport fasta file
+chloroseq<-read.fasta(file="Cym_ter_teAT30-Fvulgare_chlgenome.fasta-it38_noIUPAC.fasta")
+
+#create your fasta file as a vector
+chloroseq<-chloroseq[[1]]
+
+#sequence length, Count per base type, GC % content
+stats<-summary(chloroseq)
+stats
+
+#Percentage of each nucleotide base 
+nuccomp<-round((100*(stats$composition/stats$length)),2)
+nuccomp
+Analyze GC content:
+# create a vector to set positions of the sliding window
+starts <- seq(1, length(chloroseq) - 1000, by = 1000)
+
+# length of vector 'starts'
+n <- length(starts)
+n
+
+# make a vector of the same length as vector 'starts', but
+# just containing zeros
+chunkGCs <- numeric(n)
+for (i in 1:n) {
+    chunk <- chloroseq[starts[i]:(starts[i] + 999)]
+    chunkGC <- GC(chunk)
+    print(chunkGC)
+    chunkGCs[i] <- chunkGC
+}
+
+# Create PDF output file
+pdf("GC_moving_window_sampleName.pdf")
+
+# Plot nucleotide start position vs. GC content
+plot(starts, chunkGCs, type = "b", xlab = "Nucleotide start position",
+    ylab = "GC content")
+dev.off()
+
